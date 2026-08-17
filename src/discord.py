@@ -12,6 +12,10 @@ MAX_SECTION_CARD_CHARS = 1800
 BOT_NAME = "Rust Updates PT-BR"
 BR_FLAG = "🇧🇷"
 
+# Rust logo used in the top-right thumbnail, following the PatchBot-style
+# layout requested for the Discord embeds.
+RUST_LOGO_URL = "https://static.cdnlogo.com/logos/r/90/rust_800.png"
+
 CATEGORY_STYLE = {
     "Features": {"icon": "🛠️", "color": 0x57F287},
     "Improvements": {"icon": "⚙️", "color": 0x3498DB},
@@ -23,11 +27,7 @@ CATEGORY_STYLE = {
 
 
 def _bullet_chunks(text: str) -> list[str]:
-    """Split long changelog sections at bullet boundaries.
-
-    Keeping each card to a small number of bullets makes long categories such
-    as FIXED readable on Discord while preserving every original item.
-    """
+    """Split long changelog sections at bullet boundaries."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return ["Sem conteúdo."]
@@ -120,8 +120,8 @@ def _header_embed(
     source_url: str,
     hero_image_url: str | None,
 ) -> dict:
-    """Build a clean, text-first update header."""
-    embed = {
+    """Build a lightweight update header; section cards carry the artwork."""
+    return {
         "title": f"{BR_FLAG} RUST UPDATE • {patch_name}",
         "description": (
             "🟢 **NOVO UPDATE**\n"
@@ -132,10 +132,6 @@ def _header_embed(
         "color": 0x57F287,
         "footer": {"text": f"{BR_FLAG} Rust Updates PT-BR • {patch_name}"},
     }
-    if hero_image_url:
-        # Keep the official artwork compact; section cards own the larger visuals.
-        embed["thumbnail"] = {"url": hero_image_url}
-    return embed
 
 
 def _section_embeds(
@@ -145,10 +141,9 @@ def _section_embeds(
     description: str,
     image_url: str | None,
 ) -> list[dict]:
+    """Build PatchBot-style cards: Rust logo thumbnail + large section image."""
     icon, color = _category_style(title)
 
-    # Changelog sections are bullet lists. Split them by item count/size so a
-    # giant FIXED section does not become one giant unreadable Discord card.
     chunks = _bullet_chunks(description)
     if len(chunks) == 1 and not description.lstrip().startswith("•"):
         chunks = _generic_chunks(description)
@@ -158,13 +153,23 @@ def _section_embeds(
     for index, chunk in enumerate(chunks, start=1):
         suffix = f" • {index}/{len(chunks)}" if len(chunks) > 1 else ""
         embed = {
+            "author": {"name": "Rust"},
             "title": f"{icon} {title.upper()}{suffix}",
             "description": chunk,
             "url": source_url,
             "color": color,
+            # Small square Rust image in the top-right, matching the
+            # PatchBot-style reference.
+            "thumbnail": {"url": RUST_LOGO_URL},
         }
+
+        # Large section artwork is placed at the bottom of the embed,
+        # exactly like the reference screenshot. It is shown once per
+        # section chunk so the image is visible without becoming a giant
+        # standalone message.
         if image_url and index == 1:
-            embed["thumbnail"] = {"url": image_url}
+            embed["image"] = {"url": image_url}
+
         embeds.append(embed)
 
     return embeds
@@ -198,6 +203,7 @@ def _send_batches(webhook_url: str, embeds: list[dict], source_url: str) -> None
             batches.append(current)
             current = []
             current_chars = 0
+
         current.append(embed)
         current_chars += size
 
@@ -221,7 +227,7 @@ def send_patch(
     sections: Iterable[tuple[str, str, str | None]],
     hero_image_url: str | None = None,
 ) -> None:
-    """Publish a compact, modern PT-BR Rust update as grouped Discord embeds."""
+    """Publish compact, PatchBot-style PT-BR Rust update embeds."""
     embeds = [_header_embed(patch_name, patch_date, source_url, hero_image_url)]
 
     for title, description, image_url in sections:
