@@ -12,9 +12,13 @@ RUST_CHANGES_URL = "https://rust.facepunch.com/changes/1"
 RUST_NEWS_URL = "https://rust.facepunch.com/news"
 STEAM_NEWS_API = "https://api.steampowered.com/ISteamNews/GetNewsForApp/v0002/"
 STEAM_APP_ID = 252490
-USER_AGENT = "RustDiscordUpdater/4.1"
+USER_AGENT = "RustDiscordUpdater/4.2"
 IGNORED_MARKERS = {"add_circle", "arrow_circle_up", "remove_circle", "error", "handyman"}
 SECTION_NAMES = {"Features", "Improvements", "Fixed", "Removed", "Known Issues", "Changes"}
+GENERIC_TOPIC_HEADINGS = {
+    "image", "images", "video", "videos", "youtube", "author",
+    "follow us", "stay up to date", "newsletter", "devblog", "community",
+}
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,13 @@ class Patch:
     date: str
     sections: list[PatchSection]
     source_url: str = RUST_CHANGES_URL
+
+
+@dataclass(frozen=True)
+class PatchTopic:
+    title: str
+    description: str
+    image_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +127,126 @@ def extract_latest_patch(html: str) -> Patch:
     )
 
 
+# ---------- Facepunch article topic extraction ----------
+
+
+def _slugify(value: str) -> str:
+    value = re.sub(r"[^a-z0-9]+", "-", value.lower().strip())
+    return value.strip("-")
+
+
+def _find_news_article(soup: BeautifulSoup, patch_name: str) -> str | None:
+    wanted = " ".join(patch_name.split()).casefold()
+    for anchor in soup.find_all("a", href=True):
+        text = " ".join(anchor.get_text(" ", strip=True).split()).casefold()
+        if text == wanted:
+            return urljoin(RUST_NEWS_URL, anchor["href"])
+    return None
+
+
+def _resolve_article_url(patch_name: str) -> str:
+    article_url = f"https://rust.facepunch.com/news/{_slugify(patch_name)}/"
+    try:
+        response = requests.get(article_url, timeout=30, headers={"User-Agent": USER_AGENT})
+        if response.ok:
+            return article_url
+    except requests.RequestException:
+        pass
+
+    news_html = fetch_html(RUST_NEWS_URL)
+    news_soup = BeautifulSoup(news_html, "html.parser")
+    return _find_news_article(news_soup, patch_name) or article_url
+
+
+def _heading_text(tag: Tag) -> str:
+    return " ".join(tag.get_text(" ", strip=True).split())
+
+
+def _is_useful_topic_heading(text: str, patch_name: str) -> bool:
+    normalized = text.casefold().strip(" :")
+    if not normalized or normalized in GENERIC_TOPIC_HEADINGS:
+        return False
+    if normalized == patch_name.casefold().strip():
+        return False
+    if len(text) < 3 or len(text) > 100:
+        return False
+    if re.fullmatch(r"[\W_]+", text):
+        return False
+    return True
+
+
+def _append_text_block(parts: list[str], value: str, max_chars: int) -> None:
+    value = " ".join(value.split()).strip()
+    if not value or (parts and value == parts[-1]):
+        return
+    remaining = max_chars - sum(len(part) + 1 for part in parts)
+    if remaining <= 0:
+        return
+    if len(value) > remaining:
+        value = value[:remaining].rsplit(" ", 1)[0]
+    if value:
+        parts.append(value)
+
+
+def fetch_article_topics(patch_name: str, max_topics: int = 5) -> list[PatchTopic]:
+    """Extract real Devblog headings and their nearby prose for PatchBot-style cards."""
+    try:
+        article_url = _resolve_article_url(patch_name)
+        html = fetch_html(article_url)
+    except requests.RequestException as exc:
+        print(f"Could not load Rust Devblog for topic extraction: {exc}")
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    topics: list[PatchTopic] = []
+    seen_titles: set[str] = set()
+
+    for heading in soup.find_all(["h2", "h3", "h4"]):
+        title = _heading_text(heading)
+        if not _is_useful_topic_heading(title, patch_name):
+            continue
+        key = title.casefold()
+        if key in seen_titles:
+            continue
+
+        parts: list[str] = []
+        image_url: str | None = None
+        steps = 0
+
+        for node in heading.next_elements:
+            if node is heading:
+                continue
+            if isinstance(node, Tag) and node.name in {"h1", "h2", "h3", "h4"}:
+                break
+            if not isinstance(node, Tag):
+                continue
+
+            if node.name in {"p", "li"}:
+                _append_text_block(parts, node.get_text(" ", strip=True), 1200)
+            elif image_url is None and node.name == "img":
+                src = node.get("src") or node.get("data-src") or node.get("data-lazy-src")
+                if isinstance(src, str) and src and not src.startswith("data:"):
+                    image_url = urljoin(article_url, src)
+
+            steps += 1
+            if steps > 500:
+                break
+
+        description = "\n".join(parts).strip()
+        if not description:
+            continue
+
+        topics.append(PatchTopic(title=title, description=description, image_url=image_url))
+        seen_titles.add(key)
+        if len(topics) >= max_topics:
+            break
+
+    print(f"Main Devblog topics found: {len(topics)}")
+    for topic in topics:
+        print(f"Topic: {topic.title}")
+    return topics
+
+
 # ---------- Steam main-image lookup ----------
 
 
@@ -136,9 +267,7 @@ def _steam_news_items(limit: int = 50) -> list[dict]:
 
 
 def _extract_bbcode_images(contents: str) -> list[str]:
-    """Extract explicit image URLs and Steam's clan-image placeholders."""
     urls: list[str] = []
-
     direct_patterns = [
         r"\[img\](https?://[^\[]+)\[/img\]",
         r"\[img src=[\"']?(https?://[^\]\"']+)[\"']?\]",
@@ -146,16 +275,12 @@ def _extract_bbcode_images(contents: str) -> list[str]:
     for pattern in direct_patterns:
         urls.extend(re.findall(pattern, contents, flags=re.IGNORECASE))
 
-    # Steam frequently stores announcement artwork as:
-    # {STEAM_CLAN_IMAGE}/<clan-id>/<hash>.<ext>
-    # Convert that shorthand to the public Steam CDN URL.
     placeholder_pattern = r"\{\s*STEAM_CLAN_IMAGE\s*\}/([^\s\]\)\"']+)"
     for suffix in re.findall(placeholder_pattern, contents, flags=re.IGNORECASE):
         suffix = suffix.strip()
         if suffix:
             urls.append(f"https://clan.fastly.steamstatic.com/images/{suffix}")
 
-    # Steam sometimes emits a fully expanded clan CDN URL in the contents.
     expanded_pattern = r"https://(?:clan\.fastly\.steamstatic\.com|steamcdn-a\.akamaihd\.net|cdn\.cloudflare\.steamstatic\.com)/[^\s\]\)\"']+"
     urls.extend(re.findall(expanded_pattern, contents, flags=re.IGNORECASE))
 
@@ -177,10 +302,7 @@ def _extract_steam_og_image(article_url: str) -> str | None:
         return None
 
     soup = BeautifulSoup(html, "html.parser")
-    for attrs in (
-        {"property": "og:image"},
-        {"name": "og:image"},
-    ):
+    for attrs in ({"property": "og:image"}, {"name": "og:image"}):
         tag = soup.find("meta", attrs=attrs)
         if tag and isinstance(tag.get("content"), str) and tag["content"].strip():
             return urljoin(article_url, tag["content"].strip())
@@ -243,40 +365,18 @@ def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
     image_url = _extract_steam_og_image(article_url)
     if image_url:
         print(f"Steam main image (OG) found: {image_url}")
-        return ArticleImage(
-            url=image_url,
-            context=f"Steam main update image {patch_name}",
-            is_og_image=True,
-        )
+        return ArticleImage(url=image_url, context=f"Steam main update image {patch_name}", is_og_image=True)
 
     image_urls = _extract_bbcode_images(str(best_item.get("contents", "")))
     if image_urls:
         print(f"Steam main image (body fallback) found: {image_urls[0]}")
-        return ArticleImage(
-            url=image_urls[0],
-            context=f"Steam main update image {patch_name}",
-            is_og_image=True,
-        )
+        return ArticleImage(url=image_urls[0], context=f"Steam main update image {patch_name}", is_og_image=True)
 
     print(f"Steam announcement found for '{patch_name}', but no main image was found.")
     return None
 
 
-# ---------- Legacy Facepunch helpers kept for tests/fallback tooling ----------
-
-
-def _slugify(value: str) -> str:
-    value = re.sub(r"[^a-z0-9]+", "-", value.lower().strip())
-    return value.strip("-")
-
-
-def _find_news_article(soup: BeautifulSoup, patch_name: str) -> str | None:
-    wanted = " ".join(patch_name.split()).casefold()
-    for anchor in soup.find_all("a", href=True):
-        text = " ".join(anchor.get_text(" ", strip=True).split()).casefold()
-        if text == wanted:
-            return urljoin(RUST_NEWS_URL, anchor["href"])
-    return None
+# ---------- Legacy Facepunch image helpers ----------
 
 
 def _image_url(img: Tag, base_url: str) -> str | None:
@@ -387,10 +487,7 @@ def _words(value: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]{3,}", value.casefold()) if w not in stopwords}
 
 
-def match_section_images(
-    sections: Iterable[PatchSection],
-    images: list[ArticleImage],
-) -> dict[str, str]:
+def match_section_images(sections: Iterable[PatchSection], images: list[ArticleImage]) -> dict[str, str]:
     """Legacy matcher retained for tests and backwards compatibility."""
     if not images:
         return {}
