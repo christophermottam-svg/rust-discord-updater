@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup, Tag
 
 RUST_CHANGES_URL = "https://rust.facepunch.com/changes/1"
 RUST_NEWS_URL = "https://rust.facepunch.com/news"
-USER_AGENT = "RustDiscordUpdater/3.0"
+USER_AGENT = "RustDiscordUpdater/3.1"
 IGNORED_MARKERS = {"add_circle", "arrow_circle_up", "remove_circle", "error", "handyman"}
 SECTION_NAMES = {"Features", "Improvements", "Fixed", "Removed", "Known Issues", "Changes"}
 
@@ -70,7 +70,9 @@ def _extract_section_items(lines: list[str]) -> list[PatchSection]:
             current = PatchSection(line, [])
             continue
         if current is not None and line:
-            current.items.append(line.lstrip("• ").strip())
+            item = re.sub(r"^[•\-*]\s*", "", line).strip()
+            if item:
+                current.items.append(item)
     if current and current.items:
         sections.append(current)
     return sections
@@ -134,20 +136,21 @@ def _image_url(img: Tag, base_url: str) -> str | None:
 def _image_context(img: Tag) -> str:
     pieces: list[str] = []
     alt = img.get("alt")
-    if isinstance(alt, str):
-        pieces.append(alt)
+    if isinstance(alt, str) and alt.strip():
+        pieces.append(alt.strip())
     heading = img.find_previous(["h1", "h2", "h3", "h4"])
     if heading:
         pieces.append(heading.get_text(" ", strip=True))
-    if img.parent:
-        nearby = img.parent.get_text(" ", strip=True)
+    parent = img.parent
+    if parent:
+        nearby = parent.get_text(" ", strip=True)
         if nearby:
             pieces.append(nearby[:500])
     return " ".join(pieces)
 
 
 def fetch_article_images(patch_name: str) -> list[ArticleImage]:
-    article_url = f"https://rust.facepunch.com/news/{_slugify(patch_name)}"
+    article_url = f"https://rust.facepunch.com/news/{_slugify(patch_name)}/"
     try:
         article_html = fetch_html(article_url)
     except requests.HTTPError:
@@ -174,30 +177,51 @@ def fetch_article_images(patch_name: str) -> list[ArticleImage]:
 
 
 def _words(value: str) -> set[str]:
-    stopwords = {"the", "and", "for", "with", "from", "this", "that"}
+    stopwords = {
+        "the", "and", "for", "with", "from", "this", "that", "are",
+        "was", "were", "will", "have", "has", "into", "your", "you",
+        "can", "not", "all", "new", "fixed", "added", "update",
+    }
     return {w for w in re.findall(r"[a-z0-9]{3,}", value.casefold()) if w not in stopwords}
 
 
-def match_section_images(sections: Iterable[PatchSection], images: list[ArticleImage]) -> dict[str, str]:
+def match_section_images(
+    sections: Iterable[PatchSection],
+    images: list[ArticleImage],
+) -> dict[str, str]:
+    """Match only confident section/image pairs; never reuse a random image."""
     if not images:
         return {}
+
     remaining = list(images)
     matches: dict[str, str] = {}
+
     for section in sections:
-        section_words = _words(section.title + " " + " ".join(section.items[:8]))
+        section_words = _words(section.title + " " + " ".join(section.items[:12]))
+        if not section_words:
+            continue
+
         best_image: ArticleImage | None = None
-        best_score = -1
-        best_index = 0
+        best_score = 0
+        best_index = -1
+
         for index, image in enumerate(remaining):
-            score = len(section_words & _words(image.context))
+            image_words = _words(image.context)
+            overlap = section_words & image_words
+            score = len(overlap)
+
+            # Require at least two meaningful matching words for a section
+            # image. One generic word such as "fixed" is not enough.
             if score > best_score:
                 best_score = score
                 best_image = image
                 best_index = index
-        if best_image is not None and best_score > 0:
+
+        if best_image is not None and best_score >= 2:
             matches[section.title] = best_image.url
             remaining.pop(best_index)
-    hero = images[0].url
-    for section in sections:
-        matches.setdefault(section.title, hero)
+            print(f"Matched image to section '{section.title}': {best_image.url}")
+        else:
+            print(f"No confident image match for section '{section.title}'")
+
     return matches
