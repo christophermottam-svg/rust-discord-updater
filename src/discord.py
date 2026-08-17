@@ -119,8 +119,11 @@ def _section_embeds(
             "url": source_url,
             "color": color,
         }
+        # Section artwork uses a thumbnail so a single screenshot cannot
+        # dominate the entire update. This gives each section a compact,
+        # PatchBot-style visual without creating huge cards.
         if image_url and index == 1:
-            embed["image"] = {"url": image_url}
+            embed["thumbnail"] = {"url": image_url}
         embeds.append(embed)
     return embeds
 
