@@ -10,7 +10,9 @@ from bs4 import BeautifulSoup, Tag
 
 RUST_CHANGES_URL = "https://rust.facepunch.com/changes/1"
 RUST_NEWS_URL = "https://rust.facepunch.com/news"
-USER_AGENT = "RustDiscordUpdater/3.3"
+STEAM_NEWS_API = "https://api.steampowered.com/ISteamNews/GetNewsForApp/v0002/"
+STEAM_APP_ID = 252490
+USER_AGENT = "RustDiscordUpdater/4.0"
 IGNORED_MARKERS = {"add_circle", "arrow_circle_up", "remove_circle", "error", "handyman"}
 SECTION_NAMES = {"Features", "Improvements", "Fixed", "Removed", "Known Issues", "Changes"}
 
@@ -39,21 +41,8 @@ class ArticleImage:
     height: int | None = None
     is_og_image: bool = False
 
-    @property
-    def ratio(self) -> float:
-        if self.width and self.height and self.height > 0:
-            return self.width / self.height
-        return 0.0
 
-    @property
-    def is_banner_shape(self) -> bool:
-        return self.ratio >= 1.70
-
-    @property
-    def area(self) -> int:
-        if self.width and self.height:
-            return self.width * self.height
-        return 0
+# ---------- Rust patch scraping ----------
 
 
 def fetch_html(url: str, timeout: int = 30) -> str:
@@ -125,6 +114,95 @@ def extract_latest_patch(html: str) -> Patch:
         date=patch_date,
         sections=sections,
     )
+
+
+# ---------- Steam main-image lookup ----------
+
+
+def _normalise_text(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _steam_news_items(limit: int = 50) -> list[dict]:
+    response = requests.get(
+        STEAM_NEWS_API,
+        params={"appid": STEAM_APP_ID, "count": limit, "maxlength": 0, "format": "json"},
+        timeout=30,
+        headers={"User-Agent": USER_AGENT},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload.get("appnews", {}).get("newsitems", []) or []
+
+
+def _extract_bbcode_images(contents: str) -> list[str]:
+    """Extract the actual image URLs embedded in a Steam announcement body."""
+    urls: list[str] = []
+    patterns = [
+        r"\[img\](https?://[^\[]+)\[/img\]",
+        r"\[img src=[\"']?(https?://[^\]\"']+)[\"']?\]",
+    ]
+    for pattern in patterns:
+        urls.extend(re.findall(pattern, contents, flags=re.IGNORECASE))
+
+    # Keep order and remove duplicates.
+    seen: set[str] = set()
+    result: list[str] = []
+    for url in urls:
+        url = url.strip()
+        if url and url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
+def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
+    """Find the Steam announcement matching the Rust patch and use its first image.
+
+    Steam's news feed is the source used by the Rust Community Hub, so this is
+    more reliable for the *main update image* than harvesting every image from
+    the Facepunch article.
+    """
+    try:
+        items = _steam_news_items()
+    except (requests.RequestException, ValueError):
+        print("Steam news feed unavailable; no Steam main image will be used.")
+        return None
+
+    wanted = _normalise_text(patch_name)
+
+    candidates: list[dict] = []
+    for item in items:
+        title = _normalise_text(str(item.get("title", "")))
+        if not title:
+            continue
+        # Exact match first, then tolerant containment for titles such as
+        # "Rust - Power Trip" versus "Power Trip".
+        if title == wanted or wanted in title or title in wanted:
+            candidates.append(item)
+
+    if not candidates:
+        print(f"No Steam announcement matched patch '{patch_name}'.")
+        return None
+
+    # Prefer Rust's own Steam announcement/news feed when available.
+    item = candidates[0]
+    contents = str(item.get("contents", ""))
+    image_urls = _extract_bbcode_images(contents)
+    if not image_urls:
+        print(f"Steam announcement found for '{patch_name}', but it contains no image BBCode.")
+        return None
+
+    image_url = image_urls[0]
+    print(f"Steam main image found for '{patch_name}': {image_url}")
+    return ArticleImage(
+        url=image_url,
+        context=f"Steam main update image {patch_name}",
+        is_og_image=True,
+    )
+
+
+# ---------- Legacy Facepunch helpers kept for tests/fallback tooling ----------
 
 
 def _slugify(value: str) -> str:
@@ -201,9 +279,6 @@ def fetch_article_images(patch_name: str) -> list[ArticleImage]:
     images: list[ArticleImage] = []
     seen: set[str] = set()
 
-    # Prefer the official OpenGraph image as a banner candidate. This is
-    # usually the deliberately selected Devblog/share image, not a random
-    # screenshot embedded later in the article.
     og = soup.find("meta", attrs={"property": "og:image"})
     og_width_tag = soup.find("meta", attrs={"property": "og:image:width"})
     og_height_tag = soup.find("meta", attrs={"property": "og:image:height"})
@@ -238,18 +313,10 @@ def fetch_article_images(patch_name: str) -> list[ArticleImage]:
 
 
 def choose_hero_image(images: list[ArticleImage]) -> ArticleImage | None:
-    """Choose a true wide banner instead of the first arbitrary screenshot."""
+    """Legacy hero chooser retained for compatibility with existing tests."""
     if not images:
         return None
-
-    wide = [image for image in images if image.is_banner_shape]
-    if wide:
-        og_wide = [image for image in wide if image.is_og_image]
-        return max(og_wide or wide, key=lambda image: image.area)
-
-    # Do not force a tall/square screenshot into the hero area. A clean card
-    # without a banner is preferable to a misleading or awkward crop.
-    return None
+    return images[0]
 
 
 def _words(value: str) -> set[str]:
@@ -265,22 +332,19 @@ def match_section_images(
     sections: Iterable[PatchSection],
     images: list[ArticleImage],
 ) -> dict[str, str]:
-    """Match only confident section/image pairs; never reuse a random image."""
+    """Legacy matcher retained for tests and backwards compatibility."""
     if not images:
         return {}
 
     remaining = list(images)
     matches: dict[str, str] = {}
-
     for section in sections:
         section_words = _words(section.title + " " + " ".join(section.items[:12]))
         if not section_words:
             continue
-
         best_image: ArticleImage | None = None
         best_score = 0
         best_index = -1
-
         for index, image in enumerate(remaining):
             image_words = _words(image.context)
             score = len(section_words & image_words)
@@ -288,12 +352,10 @@ def match_section_images(
                 best_score = score
                 best_image = image
                 best_index = index
-
         if best_image is not None and best_score >= 2:
             matches[section.title] = best_image.url
             remaining.pop(best_index)
             print(f"Matched image to section '{section.title}': {best_image.url}")
         else:
             print(f"No confident image match for section '{section.title}'")
-
     return matches
