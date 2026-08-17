@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       test_mode:
-        description: "Re-publicar o patch atual para testar o visual sem alterar last_patch.json"
+        description: "TESTE O VISUAL: republicar o patch atual sem alterar last_patch.json"
         required: true
-        default: false
+        default: true
         type: boolean
 
 concurrency:
@@ -44,7 +44,9 @@ jobs:
       - name: Run updater
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python src/main.py
+        run: |
+          echo "TEST_MODE=${TEST_MODE}"
+          python src/main.py
 
       - name: Persist state
         if: ${{ env.TEST_MODE != 'true' }}
