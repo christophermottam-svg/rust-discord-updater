@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup, Tag
 
 RUST_CHANGES_URL = "https://rust.facepunch.com/changes/1"
 RUST_NEWS_URL = "https://rust.facepunch.com/news"
-USER_AGENT = "RustDiscordUpdater/3.2"
+USER_AGENT = "RustDiscordUpdater/3.3"
 IGNORED_MARKERS = {"add_circle", "arrow_circle_up", "remove_circle", "error", "handyman"}
 SECTION_NAMES = {"Features", "Improvements", "Fixed", "Removed", "Known Issues", "Changes"}
 
@@ -37,12 +37,17 @@ class ArticleImage:
     context: str
     width: int | None = None
     height: int | None = None
+    is_og_image: bool = False
 
     @property
-    def is_landscape(self) -> bool:
-        if self.width and self.height:
-            return self.width / self.height >= 1.35
-        return False
+    def ratio(self) -> float:
+        if self.width and self.height and self.height > 0:
+            return self.width / self.height
+        return 0.0
+
+    @property
+    def is_banner_shape(self) -> bool:
+        return self.ratio >= 1.70
 
     @property
     def area(self) -> int:
@@ -170,6 +175,13 @@ def _image_context(img: Tag) -> str:
     return " ".join(pieces)
 
 
+def _add_image(images: list[ArticleImage], seen: set[str], image: ArticleImage) -> None:
+    if not image.url or image.url in seen or "facepunch.com" not in image.url:
+        return
+    seen.add(image.url)
+    images.append(image)
+
+
 def fetch_article_images(patch_name: str) -> list[ArticleImage]:
     article_url = f"https://rust.facepunch.com/news/{_slugify(patch_name)}/"
     try:
@@ -188,33 +200,56 @@ def fetch_article_images(patch_name: str) -> list[ArticleImage]:
     soup = BeautifulSoup(article_html, "html.parser")
     images: list[ArticleImage] = []
     seen: set[str] = set()
+
+    # Prefer the official OpenGraph image as a banner candidate. This is
+    # usually the deliberately selected Devblog/share image, not a random
+    # screenshot embedded later in the article.
+    og = soup.find("meta", attrs={"property": "og:image"})
+    og_width_tag = soup.find("meta", attrs={"property": "og:image:width"})
+    og_height_tag = soup.find("meta", attrs={"property": "og:image:height"})
+    if og and isinstance(og.get("content"), str):
+        _add_image(
+            images,
+            seen,
+            ArticleImage(
+                url=urljoin(article_url, og["content"]),
+                context=f"{patch_name} official Devblog social banner",
+                width=_dimension(og_width_tag.get("content") if og_width_tag else None),
+                height=_dimension(og_height_tag.get("content") if og_height_tag else None),
+                is_og_image=True,
+            ),
+        )
+
     for img in soup.find_all("img"):
         url = _image_url(img, article_url)
-        if not url or url in seen or "facepunch.com" not in url:
+        if not url:
             continue
-        seen.add(url)
-        images.append(
+        _add_image(
+            images,
+            seen,
             ArticleImage(
                 url=url,
                 context=_image_context(img),
                 width=_dimension(img.get("width")),
                 height=_dimension(img.get("height")),
-            )
+            ),
         )
     return images
 
 
 def choose_hero_image(images: list[ArticleImage]) -> ArticleImage | None:
-    """Prefer a wide official image for the Discord banner, then fall back safely."""
+    """Choose a true wide banner instead of the first arbitrary screenshot."""
     if not images:
         return None
 
-    landscape = [image for image in images if image.is_landscape]
-    if landscape:
-        # Prefer the largest known landscape image; ties preserve page order.
-        return max(landscape, key=lambda image: image.area)
+    wide = [image for image in images if image.is_banner_shape]
+    if wide:
+        og_wide = [image for image in wide if image.is_og_image]
+        return max(og_wide or wide, key=lambda image: image.area)
 
-    return images[0]
+    # Do not force a tall/square screenshot into the hero area. A clean card
+    # without a banner is preferable to a misleading or awkward crop.
+    return None
 
 
 def _words(value: str) -> set[str]:
