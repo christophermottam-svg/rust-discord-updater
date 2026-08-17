@@ -1,0 +1,42 @@
+name: Rust Update → Discord
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run updater
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python src/main.py
+
+      - name: Persist state
+        run: |
+          git config user.name "rust-discord-updater"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add last_patch.json
+          if git diff --cached --quiet; then
+            echo "No state change."
+          else
+            git commit -m "chore: update published patch state"
+            git push
+          fi
