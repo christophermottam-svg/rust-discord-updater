@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from discord import send_patch
-from scraper import fetch_article_images, fetch_html, extract_latest_patch, match_section_images
+from scraper import (
+    extract_latest_patch,
+    fetch_article_images,
+    fetch_html,
+    match_section_images,
+)
 from translator import translate_text
 
 STATE_FILE = Path(os.getenv("STATE_FILE", "last_patch.json"))
@@ -36,7 +41,7 @@ def save_state(patch_id: str, patch_name: str, patch_date: str) -> None:
 
 
 def _translate_items(items: list[str]) -> str:
-    """Translate plain items, then add clean Discord bullets ourselves."""
+    """Translate plain items, then rebuild clean Discord bullets."""
     if not items:
         return ""
 
@@ -57,7 +62,10 @@ def main() -> None:
 
     test_mode = os.environ.get("TEST_MODE", "false").lower() == "true"
     if test_mode:
-        print("TEST MODE enabled: this run will publish the current patch again and will NOT change last_patch.json.")
+        print(
+            "TEST MODE enabled: this run will publish the current patch again "
+            "and will NOT change last_patch.json."
+        )
 
     print("Downloading official Rust changes page...")
     patch = extract_latest_patch(fetch_html(RUST_CHANGES_URL))
@@ -75,8 +83,15 @@ def main() -> None:
 
     print("Finding official Devblog images...")
     images = fetch_article_images(patch.name)
-    image_map = match_section_images(patch.sections, images)
+
+    # The first official Devblog image is treated as the update hero/banner.
+    # It is removed from section matching so it cannot be reused accidentally.
+    hero_image_url = images[0].url if images else None
+    section_images = images[1:] if len(images) > 1 else []
+    image_map = match_section_images(patch.sections, section_images)
+
     print(f"Official images found: {len(images)}")
+    print(f"Hero image: {hero_image_url or 'none'}")
     print(f"Confident section image matches: {len(image_map)}")
 
     published_sections: list[tuple[str, str, str | None]] = []
@@ -97,6 +112,7 @@ def main() -> None:
         patch_date=patch.date,
         source_url=patch.source_url,
         sections=published_sections,
+        hero_image_url=hero_image_url,
     )
 
     if test_mode:
