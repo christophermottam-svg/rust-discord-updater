@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Re-publicar o patch atual para testar o visual sem alterar last_patch.json"
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: rust-discord-updater
@@ -17,11 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .
-      # Argos can use Stanza for sentence splitting. Stanza tries to fetch
-      # resources.json from raw.githubusercontent.com during translation,
-      # which is unreliable in GitHub Actions. MiniSBD is bundled/managed by
-      # Argos and avoids that extra GitHub download.
       ARGOS_CHUNK_TYPE: MINISBD
+      TEST_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.test_mode || false }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,6 +47,7 @@ jobs:
         run: python src/main.py
 
       - name: Persist state
+        if: ${{ env.TEST_MODE != 'true' }}
         run: |
           git config user.name "rust-discord-updater"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
