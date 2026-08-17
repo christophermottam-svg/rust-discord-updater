@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from discord import send_patch
-from scraper import extract_latest_patch, fetch_html, fetch_steam_main_image
+from scraper import PatchTopic, extract_latest_patch, fetch_article_topics, fetch_html, fetch_steam_main_image
 from translator import translate_text
 
 STATE_FILE = Path(os.getenv("STATE_FILE", "last_patch.json"))
@@ -49,6 +49,13 @@ def _translate_items(items: list[str]) -> str:
     return "\n".join(f"• {line}" for line in translated_lines)
 
 
+def _translate_topic(topic: PatchTopic) -> tuple[str, str]:
+    """Translate a real Devblog topic heading and its prose to Brazilian Portuguese."""
+    translated_title = translate_text(topic.title).strip() or topic.title
+    translated_description = translate_text(topic.description).strip() or topic.description
+    return translated_title, translated_description
+
+
 def main() -> None:
     webhook = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook:
@@ -73,12 +80,11 @@ def main() -> None:
         print(f"Test patch: {patch.name}")
     else:
         print(f"New patch detected: {patch.name}")
-    print(f"Sections: {len(patch.sections)}")
+    print(f"Sections detected: {len(patch.sections)}")
 
-    # Steam Community is now the image source for the update's main artwork.
-    # This is the same source used by the Rust Community Hub's news cards,
-    # and it avoids publishing unrelated Facepunch screenshots from inside
-    # the article.
+    print("Finding the main Devblog topics...")
+    topics = fetch_article_topics(patch.name, max_topics=5)
+
     print("Finding Steam Community main update image...")
     steam_image = fetch_steam_main_image(patch.name)
     if steam_image:
@@ -87,20 +93,29 @@ def main() -> None:
         print("Steam main image: none")
 
     published_sections: list[tuple[str, str, str | None]] = []
-    for index, section in enumerate(patch.sections):
-        print(f"Translating section: {section.title}")
-        portuguese = _translate_items(section.items)
 
-        # Only the first PatchBot-style card gets the Steam main image.
-        # No secondary Facepunch screenshots are sent.
-        image_url = steam_image.url if steam_image and index == 0 else None
-        published_sections.append(
-            (
-                section.title,
-                portuguese,
-                image_url,
+    if topics:
+        print(f"Using {len(topics)} main Devblog topics instead of raw Features/Fixed lists.")
+        for index, topic in enumerate(topics):
+            print(f"Translating topic: {topic.title}")
+            translated_title, translated_description = _translate_topic(topic)
+            # Keep only the main Steam artwork. Do not attach secondary
+            # Facepunch screenshots to the individual topics.
+            image_url = steam_image.url if steam_image and index == 0 else None
+            published_sections.append(
+                (
+                    translated_title,
+                    translated_description,
+                    image_url,
+                )
             )
-        )
+    else:
+        print("No Devblog topics found; falling back to the raw Rust changelist sections.")
+        for index, section in enumerate(patch.sections):
+            print(f"Translating section: {section.title}")
+            portuguese = _translate_items(section.items)
+            image_url = steam_image.url if steam_image and index == 0 else None
+            published_sections.append((section.title, portuguese, image_url))
 
     send_patch(
         webhook_url=webhook,
