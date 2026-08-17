@@ -174,7 +174,8 @@ def fetch_article_images(patch_name: str) -> list[ArticleImage]:
 
 
 def _words(value: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z0-9]{3,}", value.casefold()) if w not in {"the", "and", "for", "with", "from", "this", "that"}}
+    stopwords = {"the", "and", "for", "with", "from", "this", "that"}
+    return {w for w in re.findall(r"[a-z0-9]{3,}", value.casefold()) if w not in stopwords}
 
 
 def match_section_images(sections: Iterable[PatchSection], images: list[ArticleImage]) -> dict[str, str]:
@@ -184,16 +185,18 @@ def match_section_images(sections: Iterable[PatchSection], images: list[ArticleI
     matches: dict[str, str] = {}
     for section in sections:
         section_words = _words(section.title + " " + " ".join(section.items[:8]))
-        best: tuple[int, int, ArticleImage] | None = None
+        best_image: ArticleImage | None = None
+        best_score = -1
+        best_index = 0
         for index, image in enumerate(remaining):
             score = len(section_words & _words(image.context))
-            candidate = (score, -index, image)
-            if best is None or candidate > best:
-                best = candidate
-        if best is not None and best[0] > 0:
-            image = best[2]
-            matches[section.title] = image.url
-            remaining.remove(image)
+            if score > best_score:
+                best_score = score
+                best_image = image
+                best_index = index
+        if best_image is not None and best_score > 0:
+            matches[section.title] = best_image.url
+            remaining.pop(best_index)
     hero = images[0].url
     for section in sections:
         matches.setdefault(section.title, hero)
