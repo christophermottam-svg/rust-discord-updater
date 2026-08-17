@@ -1,0 +1,1 @@
+"""Rust Discord updater package."""
