@@ -7,6 +7,8 @@ import requests
 DISCORD_MAX_DESCRIPTION = 4096
 DISCORD_MAX_EMBEDS = 10
 DISCORD_MAX_TOTAL_CHARS = 6000
+MAX_ITEMS_PER_SECTION_CARD = 7
+MAX_SECTION_CARD_CHARS = 1800
 BOT_NAME = "Rust Updates PT-BR"
 BR_FLAG = "🇧🇷"
 
@@ -20,7 +22,42 @@ CATEGORY_STYLE = {
 }
 
 
-def _chunks(text: str, limit: int = DISCORD_MAX_DESCRIPTION) -> list[str]:
+def _bullet_chunks(text: str) -> list[str]:
+    """Split long changelog sections at bullet boundaries.
+
+    Keeping each card to a small number of bullets makes long categories such
+    as FIXED readable on Discord while preserving every original item.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ["Sem conteúdo."]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_chars = 0
+
+    for line in lines:
+        line_size = len(line) + 1
+        should_split = current and (
+            len(current) >= MAX_ITEMS_PER_SECTION_CARD
+            or current_chars + line_size > MAX_SECTION_CARD_CHARS
+        )
+
+        if should_split:
+            chunks.append("\n".join(current))
+            current = []
+            current_chars = 0
+
+        current.append(line)
+        current_chars += line_size
+
+    if current:
+        chunks.append("\n".join(current))
+
+    return chunks or ["Sem conteúdo."]
+
+
+def _generic_chunks(text: str, limit: int = DISCORD_MAX_DESCRIPTION) -> list[str]:
     text = text.strip()
     chunks: list[str] = []
     while len(text) > limit:
@@ -83,7 +120,7 @@ def _header_embed(
     source_url: str,
     hero_image_url: str | None,
 ) -> dict:
-    """Build a compact header with the artwork as a small thumbnail."""
+    """Build a clean, text-first update header."""
     embed = {
         "title": f"{BR_FLAG} RUST UPDATE • {patch_name}",
         "description": (
@@ -96,6 +133,7 @@ def _header_embed(
         "footer": {"text": f"{BR_FLAG} Rust Updates PT-BR • {patch_name}"},
     }
     if hero_image_url:
+        # Keep the official artwork compact; section cards own the larger visuals.
         embed["thumbnail"] = {"url": hero_image_url}
     return embed
 
@@ -108,7 +146,13 @@ def _section_embeds(
     image_url: str | None,
 ) -> list[dict]:
     icon, color = _category_style(title)
-    chunks = _chunks(description)
+
+    # Changelog sections are bullet lists. Split them by item count/size so a
+    # giant FIXED section does not become one giant unreadable Discord card.
+    chunks = _bullet_chunks(description)
+    if len(chunks) == 1 and not description.lstrip().startswith("•"):
+        chunks = _generic_chunks(description)
+
     embeds: list[dict] = []
 
     for index, chunk in enumerate(chunks, start=1):
@@ -119,12 +163,10 @@ def _section_embeds(
             "url": source_url,
             "color": color,
         }
-        # Section artwork uses a thumbnail so a single screenshot cannot
-        # dominate the entire update. This gives each section a compact,
-        # PatchBot-style visual without creating huge cards.
         if image_url and index == 1:
             embed["thumbnail"] = {"url": image_url}
         embeds.append(embed)
+
     return embeds
 
 
@@ -142,6 +184,7 @@ def _official_button(source_url: str) -> list[dict]:
 
 
 def _send_batches(webhook_url: str, embeds: list[dict], source_url: str) -> None:
+    """Group embeds into the fewest Discord messages allowed by API limits."""
     batches: list[list[dict]] = []
     current: list[dict] = []
     current_chars = 0
@@ -163,7 +206,10 @@ def _send_batches(webhook_url: str, embeds: list[dict], source_url: str) -> None
 
     for index, batch in enumerate(batches):
         components = _official_button(source_url) if index == len(batches) - 1 else None
-        print(f"Sending Discord batch {index + 1}/{len(batches)} with {len(batch)} embeds...")
+        print(
+            f"Sending Discord batch {index + 1}/{len(batches)} "
+            f"with {len(batch)} embeds..."
+        )
         _post(webhook_url, batch, components=components)
 
 
@@ -179,6 +225,14 @@ def send_patch(
     embeds = [_header_embed(patch_name, patch_date, source_url, hero_image_url)]
 
     for title, description, image_url in sections:
-        embeds.extend(_section_embeds(patch_name, source_url, title, description, image_url))
+        embeds.extend(
+            _section_embeds(
+                patch_name,
+                source_url,
+                title,
+                description,
+                image_url,
+            )
+        )
 
     _send_batches(webhook_url, embeds, source_url)
