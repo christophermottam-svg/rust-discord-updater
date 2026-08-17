@@ -17,6 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .
+      # Argos can use Stanza for sentence splitting. Stanza tries to fetch
+      # resources.json from raw.githubusercontent.com during translation,
+      # which is unreliable in GitHub Actions. MiniSBD is bundled/managed by
+      # Argos and avoids that extra GitHub download.
+      ARGOS_CHUNK_TYPE: MINISBD
     steps:
       - name: Checkout
         uses: actions/checkout@v4
