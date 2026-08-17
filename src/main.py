@@ -6,12 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from discord import send_patch
-from scraper import (
-    extract_latest_patch,
-    fetch_article_images,
-    fetch_html,
-    match_section_images,
-)
+from scraper import extract_latest_patch, fetch_html, fetch_steam_main_image
 from translator import translate_text
 
 STATE_FILE = Path(os.getenv("STATE_FILE", "last_patch.json"))
@@ -80,22 +75,30 @@ def main() -> None:
         print(f"New patch detected: {patch.name}")
     print(f"Sections: {len(patch.sections)}")
 
-    print("Finding official Devblog images...")
-    images = fetch_article_images(patch.name)
-    image_map = match_section_images(patch.sections, images)
-
-    print(f"Official images found: {len(images)}")
-    print(f"Confident section image matches: {len(image_map)}")
+    # Steam Community is now the image source for the update's main artwork.
+    # This is the same source used by the Rust Community Hub's news cards,
+    # and it avoids publishing unrelated Facepunch screenshots from inside
+    # the article.
+    print("Finding Steam Community main update image...")
+    steam_image = fetch_steam_main_image(patch.name)
+    if steam_image:
+        print(f"Steam main image: {steam_image.url}")
+    else:
+        print("Steam main image: none")
 
     published_sections: list[tuple[str, str, str | None]] = []
-    for section in patch.sections:
+    for index, section in enumerate(patch.sections):
         print(f"Translating section: {section.title}")
         portuguese = _translate_items(section.items)
+
+        # Only the first PatchBot-style card gets the Steam main image.
+        # No secondary Facepunch screenshots are sent.
+        image_url = steam_image.url if steam_image and index == 0 else None
         published_sections.append(
             (
                 section.title,
                 portuguese,
-                image_map.get(section.title),
+                image_url,
             )
         )
 
