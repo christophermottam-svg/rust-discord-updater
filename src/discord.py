@@ -83,12 +83,7 @@ def _header_embed(
     source_url: str,
     hero_image_url: str | None,
 ) -> dict:
-    """Build a compact header; keep the Devblog image as a thumbnail.
-
-    A large Discord image dominates the message and can make a portrait or
-    collage-style Devblog asset look awkward. The thumbnail keeps the official
-    artwork visible without letting it take over the whole update card.
-    """
+    """Build a compact header with the artwork as a small thumbnail."""
     embed = {
         "title": f"{BR_FLAG} RUST UPDATE • {patch_name}",
         "description": (
@@ -144,7 +139,6 @@ def _official_button(source_url: str) -> list[dict]:
 
 
 def _send_batches(webhook_url: str, embeds: list[dict], source_url: str) -> None:
-    """Group embeds into the fewest Discord messages allowed by API limits."""
     batches: list[list[dict]] = []
     current: list[dict] = []
     current_chars = 0
