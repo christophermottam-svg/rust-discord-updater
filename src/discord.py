@@ -5,7 +5,6 @@ from typing import Iterable
 import requests
 
 DISCORD_MAX_DESCRIPTION = 4096
-DISCORD_MAX_EMBEDS = 10
 
 
 def _chunks(text: str, limit: int = DISCORD_MAX_DESCRIPTION) -> list[str]:
@@ -31,16 +30,9 @@ def send_patch(
     source_url: str,
     sections: Iterable[tuple[str, str, str | None]],
 ) -> None:
-    embeds: list[dict] = [
-        {
-            "title": f"🦀 RUST — {patch_name}",
-            "description": f"**{patch_date}**\n\n🚀 **Nova atualização do Rust!**",
-            "url": source_url,
-            "color": 0xCE422B,
-            "footer": {"text": "Rust • Patch Notes oficiais • Tradução automática PT-BR"},
-        }
-    ]
-
+    # Discord limits the combined size of all embeds in one message to 6000
+    # characters. Send each embed separately so a valid individual embed is
+    # never rejected because the other sections were bundled with it.
     for title, description, image_url in sections:
         chunks = _chunks(description)
         for index, chunk in enumerate(chunks, start=1):
@@ -54,14 +46,7 @@ def send_patch(
             }
             if image_url:
                 embed["image"] = {"url": image_url}
-            embeds.append(embed)
-
-            if len(embeds) == DISCORD_MAX_EMBEDS:
-                _post(webhook_url, embeds)
-                embeds = []
-
-    if embeds:
-        _post(webhook_url, embeds)
+            _post(webhook_url, [embed])
 
 
 def _post(webhook_url: str, embeds: list[dict]) -> None:
@@ -81,7 +66,7 @@ def _post(webhook_url: str, embeds: list[dict]) -> None:
     print(f"Discord webhook HTTP status: {response.status_code}")
 
     if not response.ok:
-        print(f"Discord response: {response.text[:500]}")
+        print(f"Discord response: {response.text[:1000]}")
 
     response.raise_for_status()
 
