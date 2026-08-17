@@ -77,7 +77,18 @@ def _post(webhook_url: str, embeds: list[dict], components: list[dict] | None = 
         print("Discord accepted the webhook, but returned no JSON payload.")
 
 
-def _header_embed(patch_name: str, patch_date: str, source_url: str, hero_image_url: str | None) -> dict:
+def _header_embed(
+    patch_name: str,
+    patch_date: str,
+    source_url: str,
+    hero_image_url: str | None,
+) -> dict:
+    """Build a compact header; keep the Devblog image as a thumbnail.
+
+    A large Discord image dominates the message and can make a portrait or
+    collage-style Devblog asset look awkward. The thumbnail keeps the official
+    artwork visible without letting it take over the whole update card.
+    """
     embed = {
         "title": f"{BR_FLAG} RUST UPDATE • {patch_name}",
         "description": (
@@ -87,14 +98,20 @@ def _header_embed(patch_name: str, patch_date: str, source_url: str, hero_image_
         ),
         "url": source_url,
         "color": 0x57F287,
-        "footer": {"text": f"{BR_FLAG} Rust Updates PT-BR"},
+        "footer": {"text": f"{BR_FLAG} Rust Updates PT-BR • {patch_name}"},
     }
     if hero_image_url:
-        embed["image"] = {"url": hero_image_url}
+        embed["thumbnail"] = {"url": hero_image_url}
     return embed
 
 
-def _section_embeds(patch_name: str, source_url: str, title: str, description: str, image_url: str | None) -> list[dict]:
+def _section_embeds(
+    patch_name: str,
+    source_url: str,
+    title: str,
+    description: str,
+    image_url: str | None,
+) -> list[dict]:
     icon, color = _category_style(title)
     chunks = _chunks(description)
     embeds: list[dict] = []
