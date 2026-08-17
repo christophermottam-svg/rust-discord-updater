@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup, Tag
 
 RUST_CHANGES_URL = "https://rust.facepunch.com/changes/1"
 RUST_NEWS_URL = "https://rust.facepunch.com/news"
-USER_AGENT = "RustDiscordUpdater/3.1"
+USER_AGENT = "RustDiscordUpdater/3.2"
 IGNORED_MARKERS = {"add_circle", "arrow_circle_up", "remove_circle", "error", "handyman"}
 SECTION_NAMES = {"Features", "Improvements", "Fixed", "Removed", "Known Issues", "Changes"}
 
@@ -35,6 +35,20 @@ class Patch:
 class ArticleImage:
     url: str
     context: str
+    width: int | None = None
+    height: int | None = None
+
+    @property
+    def is_landscape(self) -> bool:
+        if self.width and self.height:
+            return self.width / self.height >= 1.35
+        return False
+
+    @property
+    def area(self) -> int:
+        if self.width and self.height:
+            return self.width * self.height
+        return 0
 
 
 def fetch_html(url: str, timeout: int = 30) -> str:
@@ -133,6 +147,13 @@ def _image_url(img: Tag, base_url: str) -> str | None:
     return None
 
 
+def _dimension(value: object) -> int | None:
+    if value is None:
+        return None
+    match = re.search(r"\d+", str(value))
+    return int(match.group()) if match else None
+
+
 def _image_context(img: Tag) -> str:
     pieces: list[str] = []
     alt = img.get("alt")
@@ -172,8 +193,28 @@ def fetch_article_images(patch_name: str) -> list[ArticleImage]:
         if not url or url in seen or "facepunch.com" not in url:
             continue
         seen.add(url)
-        images.append(ArticleImage(url=url, context=_image_context(img)))
+        images.append(
+            ArticleImage(
+                url=url,
+                context=_image_context(img),
+                width=_dimension(img.get("width")),
+                height=_dimension(img.get("height")),
+            )
+        )
     return images
+
+
+def choose_hero_image(images: list[ArticleImage]) -> ArticleImage | None:
+    """Prefer a wide official image for the Discord banner, then fall back safely."""
+    if not images:
+        return None
+
+    landscape = [image for image in images if image.is_landscape]
+    if landscape:
+        # Prefer the largest known landscape image; ties preserve page order.
+        return max(landscape, key=lambda image: image.area)
+
+    return images[0]
 
 
 def _words(value: str) -> set[str]:
@@ -207,11 +248,7 @@ def match_section_images(
 
         for index, image in enumerate(remaining):
             image_words = _words(image.context)
-            overlap = section_words & image_words
-            score = len(overlap)
-
-            # Require at least two meaningful matching words for a section
-            # image. One generic word such as "fixed" is not enough.
+            score = len(section_words & image_words)
             if score > best_score:
                 best_score = score
                 best_image = image
