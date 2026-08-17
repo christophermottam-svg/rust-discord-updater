@@ -136,18 +136,33 @@ def _steam_news_items(limit: int = 50) -> list[dict]:
 
 
 def _extract_bbcode_images(contents: str) -> list[str]:
+    """Extract explicit image URLs and Steam's clan-image placeholders."""
     urls: list[str] = []
-    patterns = [
+
+    direct_patterns = [
         r"\[img\](https?://[^\[]+)\[/img\]",
         r"\[img src=[\"']?(https?://[^\]\"']+)[\"']?\]",
     ]
-    for pattern in patterns:
+    for pattern in direct_patterns:
         urls.extend(re.findall(pattern, contents, flags=re.IGNORECASE))
+
+    # Steam frequently stores announcement artwork as:
+    # {STEAM_CLAN_IMAGE}/<clan-id>/<hash>.<ext>
+    # Convert that shorthand to the public Steam CDN URL.
+    placeholder_pattern = r"\{\s*STEAM_CLAN_IMAGE\s*\}/([^\s\]\)\"']+)"
+    for suffix in re.findall(placeholder_pattern, contents, flags=re.IGNORECASE):
+        suffix = suffix.strip()
+        if suffix:
+            urls.append(f"https://clan.fastly.steamstatic.com/images/{suffix}")
+
+    # Steam sometimes emits a fully expanded clan CDN URL in the contents.
+    expanded_pattern = r"https://(?:clan\.fastly\.steamstatic\.com|steamcdn-a\.akamaihd\.net|cdn\.cloudflare\.steamstatic\.com)/[^\s\]\)\"']+"
+    urls.extend(re.findall(expanded_pattern, contents, flags=re.IGNORECASE))
 
     seen: set[str] = set()
     result: list[str] = []
     for url in urls:
-        url = url.strip()
+        url = url.strip().rstrip("]")
         if url and url not in seen:
             seen.add(url)
             result.append(url)
@@ -169,7 +184,6 @@ def _extract_steam_og_image(article_url: str) -> str | None:
         tag = soup.find("meta", attrs=attrs)
         if tag and isinstance(tag.get("content"), str) and tag["content"].strip():
             return urljoin(article_url, tag["content"].strip())
-
     return None
 
 
@@ -184,12 +198,7 @@ def _steam_announcement_url(item: dict) -> str | None:
 
 
 def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
-    """Find the Steam announcement matching the Rust patch and return its main image.
-
-    We first open the matching Steam announcement and read its OpenGraph image,
-    which is the header/cover artwork displayed by Steam. The older API feed does
-    not expose that cover field directly, so the article page is required.
-    """
+    """Find the matching Steam announcement and return its main image."""
     try:
         items = _steam_news_items()
     except (requests.RequestException, ValueError):
@@ -206,19 +215,16 @@ def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
         title = _normalise_text(str(item.get("title", "")))
         if not title:
             continue
-
         if title == wanted:
             best_item = item
             best_score = 1.0
             break
-
         if wanted in title or title in wanted:
             score = 0.8
         else:
             wanted_words = set(wanted.split())
             title_words = set(title.split())
             score = len(wanted_words & title_words) / max(len(wanted_words | title_words), 1)
-
         if score > best_score:
             best_score = score
             best_item = item
@@ -234,7 +240,6 @@ def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
 
     print(f"Matched Steam announcement: {best_item.get('title')} ({best_score:.2f})")
 
-    # Preferred source: the actual Steam announcement cover/header.
     image_url = _extract_steam_og_image(article_url)
     if image_url:
         print(f"Steam main image (OG) found: {image_url}")
@@ -244,7 +249,6 @@ def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
             is_og_image=True,
         )
 
-    # Fallback: use the first explicit image in the announcement body.
     image_urls = _extract_bbcode_images(str(best_item.get("contents", "")))
     if image_urls:
         print(f"Steam main image (body fallback) found: {image_urls[0]}")
@@ -390,7 +394,6 @@ def match_section_images(
     """Legacy matcher retained for tests and backwards compatibility."""
     if not images:
         return {}
-
     remaining = list(images)
     matches: dict[str, str] = {}
     for section in sections:
