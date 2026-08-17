@@ -29,7 +29,25 @@ def save_state(patch_id: str, patch_name: str, patch_date: str) -> None:
         "patch_date": patch_date,
         "published_at": datetime.now(timezone.utc).isoformat(),
     }
-    STATE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    STATE_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _translate_items(items: list[str]) -> str:
+    """Translate plain items, then add clean Discord bullets ourselves."""
+    if not items:
+        return ""
+
+    english = "\n".join(items)
+    portuguese = translate_text(english)
+    translated_lines = [
+        line.strip().lstrip("•-* ").strip()
+        for line in portuguese.splitlines()
+        if line.strip()
+    ]
+    return "\n".join(f"• {line}" for line in translated_lines)
 
 
 def main() -> None:
@@ -52,13 +70,19 @@ def main() -> None:
     images = fetch_article_images(patch.name)
     image_map = match_section_images(patch.sections, images)
     print(f"Official images found: {len(images)}")
+    print(f"Confident section image matches: {len(image_map)}")
 
     published_sections: list[tuple[str, str, str | None]] = []
     for section in patch.sections:
-        english = "\n".join(f"• {item}" for item in section.items)
         print(f"Translating section: {section.title}")
-        portuguese = translate_text(english)
-        published_sections.append((section.title, portuguese, image_map.get(section.title)))
+        portuguese = _translate_items(section.items)
+        published_sections.append(
+            (
+                section.title,
+                portuguese,
+                image_map.get(section.title),
+            )
+        )
 
     send_patch(
         webhook_url=webhook,
