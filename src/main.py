@@ -7,6 +7,7 @@ from pathlib import Path
 
 from discord import send_patch
 from scraper import (
+    choose_hero_image,
     extract_latest_patch,
     fetch_article_images,
     fetch_html,
@@ -83,15 +84,17 @@ def main() -> None:
 
     print("Finding official Devblog images...")
     images = fetch_article_images(patch.name)
+    hero = choose_hero_image(images)
 
-    # The first official Devblog image is treated as the update hero/banner.
-    # It is removed from section matching so it cannot be reused accidentally.
-    hero_image_url = images[0].url if images else None
-    section_images = images[1:] if len(images) > 1 else []
+    # Keep the hero out of section matching so the banner cannot be reused
+    # as a random category image.
+    section_images = [image for image in images if not hero or image.url != hero.url]
     image_map = match_section_images(patch.sections, section_images)
 
     print(f"Official images found: {len(images)}")
-    print(f"Hero image: {hero_image_url or 'none'}")
+    print(f"Hero image: {hero.url if hero else 'none'}")
+    if hero and hero.width and hero.height:
+        print(f"Hero dimensions: {hero.width}x{hero.height}")
     print(f"Confident section image matches: {len(image_map)}")
 
     published_sections: list[tuple[str, str, str | None]] = []
@@ -112,7 +115,7 @@ def main() -> None:
         patch_date=patch.date,
         source_url=patch.source_url,
         sections=published_sections,
-        hero_image_url=hero_image_url,
+        hero_image_url=hero.url if hero else None,
     )
 
     if test_mode:
