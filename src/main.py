@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from discord import send_patch
-from scraper import PatchTopic, extract_latest_patch, fetch_article_topics, fetch_html, fetch_steam_main_image
+from scraper import extract_latest_patch, fetch_html, fetch_steam_main_image
+from topic_extractor import MainTopic, fetch_main_topics
 from translator import translate_text
 
 STATE_FILE = Path(os.getenv("STATE_FILE", "last_patch.json"))
@@ -35,25 +36,22 @@ def save_state(patch_id: str, patch_name: str, patch_date: str) -> None:
     )
 
 
-def _translate_items(items: list[str]) -> str:
-    if not items:
-        return ""
-
-    english = "\n".join(items)
-    portuguese = translate_text(english)
-    translated_lines = [
-        line.strip().lstrip("•-* ").strip()
-        for line in portuguese.splitlines()
-        if line.strip()
-    ]
-    return "\n".join(f"• {line}" for line in translated_lines)
-
-
-def _translate_topic(topic: PatchTopic) -> tuple[str, str]:
-    """Translate a real Devblog topic heading and its prose to Brazilian Portuguese."""
+def _translate_topic(topic: MainTopic) -> tuple[str, str]:
+    """Translate one user-facing Rust topic to Brazilian Portuguese."""
     translated_title = translate_text(topic.title).strip() or topic.title
     translated_description = translate_text(topic.description).strip() or topic.description
     return translated_title, translated_description
+
+
+def _raw_sections_to_topics(patch) -> list[MainTopic]:
+    """Fallback: turn the official changelist sections into readable topics."""
+    topics: list[MainTopic] = []
+    for section in patch.sections:
+        if not section.items:
+            continue
+        description = "\n".join(f"• {item}" for item in section.items[:8])
+        topics.append(MainTopic(title=section.title, description=description))
+    return topics
 
 
 def main() -> None:
@@ -80,10 +78,12 @@ def main() -> None:
         print(f"Test patch: {patch.name}")
     else:
         print(f"New patch detected: {patch.name}")
-    print(f"Sections detected: {len(patch.sections)}")
 
-    print("Finding the main Devblog topics...")
-    topics = fetch_article_topics(patch.name, max_topics=5)
+    print("Finding user-facing main topics from the Rust Devblog...")
+    topics = fetch_main_topics(patch.name, max_topics=6)
+    if not topics:
+        print("No curated main topics found; using official changelist sections as fallback.")
+        topics = _raw_sections_to_topics(patch)
 
     print("Finding Steam Community main update image...")
     steam_image = fetch_steam_main_image(patch.name)
@@ -93,29 +93,17 @@ def main() -> None:
         print("Steam main image: none")
 
     published_sections: list[tuple[str, str, str | None]] = []
-
-    if topics:
-        print(f"Using {len(topics)} main Devblog topics instead of raw Features/Fixed lists.")
-        for index, topic in enumerate(topics):
-            print(f"Translating topic: {topic.title}")
-            translated_title, translated_description = _translate_topic(topic)
-            # Keep only the main Steam artwork. Do not attach secondary
-            # Facepunch screenshots to the individual topics.
-            image_url = steam_image.url if steam_image and index == 0 else None
-            published_sections.append(
-                (
-                    translated_title,
-                    translated_description,
-                    image_url,
-                )
+    for index, topic in enumerate(topics):
+        print(f"Translating main topic: {topic.title}")
+        translated_title, translated_description = _translate_topic(topic)
+        image_url = steam_image.url if steam_image and index == 0 else None
+        published_sections.append(
+            (
+                translated_title,
+                translated_description,
+                image_url,
             )
-    else:
-        print("No Devblog topics found; falling back to the raw Rust changelist sections.")
-        for index, section in enumerate(patch.sections):
-            print(f"Translating section: {section.title}")
-            portuguese = _translate_items(section.items)
-            image_url = steam_image.url if steam_image and index == 0 else None
-            published_sections.append((section.title, portuguese, image_url))
+        )
 
     send_patch(
         webhook_url=webhook,
