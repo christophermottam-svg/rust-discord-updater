@@ -7,8 +7,8 @@ import requests
 DISCORD_MAX_DESCRIPTION = 4096
 DISCORD_MAX_EMBEDS = 10
 DISCORD_MAX_TOTAL_CHARS = 6000
+BOT_NAME = "Rust Updates PT-BR"
 BR_FLAG = "🇧🇷"
-BOT_NAME = f"{BR_FLAG} Rust Updates PT-BR"
 
 CATEGORY_STYLE = {
     "Features": {"icon": "🛠️", "color": 0x57F287},
@@ -81,8 +81,8 @@ def _header_embed(patch_name: str, patch_date: str, source_url: str, hero_image_
     embed = {
         "title": f"{BR_FLAG} RUST UPDATE • {patch_name}",
         "description": (
-            "🟢 **NOVO UPDATE**\n\n"
-            f"📅 **{patch_date or 'Data oficial'}**\n\n"
+            "🟢 **NOVO UPDATE**\n"
+            f"📅 **{patch_date or 'Data oficial'}**\n"
             f"{BR_FLAG} **Português (Brasil)**  •  🤖 Tradução automática"
         ),
         "url": source_url,
@@ -106,7 +106,6 @@ def _section_embeds(patch_name: str, source_url: str, title: str, description: s
             "description": chunk,
             "url": source_url,
             "color": color,
-            "footer": {"text": f"{BR_FLAG} Rust Updates PT-BR • {patch_name}"},
         }
         if image_url and index == 1:
             embed["image"] = {"url": image_url}
@@ -128,7 +127,7 @@ def _official_button(source_url: str) -> list[dict]:
 
 
 def _send_batches(webhook_url: str, embeds: list[dict], source_url: str) -> None:
-    """Group embeds into fewer Discord messages without exceeding Discord limits."""
+    """Group embeds into the fewest Discord messages allowed by API limits."""
     batches: list[list[dict]] = []
     current: list[dict] = []
     current_chars = 0
@@ -162,7 +161,7 @@ def send_patch(
     sections: Iterable[tuple[str, str, str | None]],
     hero_image_url: str | None = None,
 ) -> None:
-    """Publish a modern PT-BR Rust update using compact multi-embed messages."""
+    """Publish a compact, modern PT-BR Rust update as grouped Discord embeds."""
     embeds = [_header_embed(patch_name, patch_date, source_url, hero_image_url)]
 
     for title, description, image_url in sections:
