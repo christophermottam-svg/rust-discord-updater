@@ -55,15 +55,22 @@ def main() -> None:
     if not webhook:
         raise RuntimeError("DISCORD_WEBHOOK_URL secret is not configured.")
 
+    test_mode = os.environ.get("TEST_MODE", "false").lower() == "true"
+    if test_mode:
+        print("TEST MODE enabled: this run will publish the current patch again and will NOT change last_patch.json.")
+
     print("Downloading official Rust changes page...")
     patch = extract_latest_patch(fetch_html(RUST_CHANGES_URL))
     state = load_state()
 
-    if state.get("patch_id") == patch.patch_id:
+    if not test_mode and state.get("patch_id") == patch.patch_id:
         print(f"Patch already published: {patch.name}")
         return
 
-    print(f"New patch detected: {patch.name}")
+    if test_mode:
+        print(f"Test patch: {patch.name}")
+    else:
+        print(f"New patch detected: {patch.name}")
     print(f"Sections: {len(patch.sections)}")
 
     print("Finding official Devblog images...")
@@ -92,8 +99,11 @@ def main() -> None:
         sections=published_sections,
     )
 
-    save_state(patch.patch_id, patch.name, patch.date)
-    print("Patch published successfully.")
+    if test_mode:
+        print("TEST MODE: publication sent; last_patch.json was NOT changed.")
+    else:
+        save_state(patch.patch_id, patch.name, patch.date)
+        print("Patch published successfully.")
 
 
 if __name__ == "__main__":
