@@ -35,32 +35,33 @@ def _chunks(text: str, limit: int = DISCORD_MAX_DESCRIPTION) -> list[str]:
 
 
 def _category_style(title: str) -> tuple[str, int]:
-    return CATEGORY_STYLE.get(
-        title,
-        {"icon": "🔹", "color": 0xCE422B},
-    )["icon"], CATEGORY_STYLE.get(
-        title,
-        {"icon": "🔹", "color": 0xCE422B},
-    )["color"]
+    style = CATEGORY_STYLE.get(title, {"icon": "🔹", "color": 0x5865F2})
+    return style["icon"], style["color"]
 
 
-def _post(webhook_url: str, embeds: list[dict]) -> None:
+def _post(
+    webhook_url: str,
+    embeds: list[dict],
+    components: list[dict] | None = None,
+) -> None:
+    payload = {
+        "username": BOT_NAME,
+        "embeds": embeds,
+        "allowed_mentions": {"parse": []},
+    }
+    if components:
+        payload["components"] = components
+
     response = requests.post(
         webhook_url,
         params={"wait": "true"},
-        json={
-            "username": BOT_NAME,
-            "embeds": embeds,
-            "allowed_mentions": {"parse": []},
-        },
+        json=payload,
         timeout=30,
     )
 
     print(f"Discord webhook HTTP status: {response.status_code}")
-
     if not response.ok:
         print(f"Discord response: {response.text[:1000]}")
-
     response.raise_for_status()
 
     try:
@@ -81,7 +82,7 @@ def _send_header(
     description = (
         "🟢 **NOVO UPDATE**\n\n"
         f"📅 **{patch_date or 'Data oficial'}**\n\n"
-        f"{BR_FLAG} **Tradução automática para Português (Brasil)**  •  🤖 Traduzido por IA"
+        f"{BR_FLAG} **Português (Brasil)**  •  🤖 Tradução automática"
     )
 
     embed = {
@@ -89,10 +90,11 @@ def _send_header(
         "description": description,
         "url": source_url,
         "color": 0x57F287,
-        "footer": {
-            "text": f"{BR_FLAG} Rust Updates PT-BR • Tradução automática"
-        },
+        "footer": {"text": f"{BR_FLAG} Rust Updates PT-BR"},
+        "timestamp": None,
     }
+    # Discord rejects null embed fields in some clients, so remove it before sending.
+    embed.pop("timestamp")
 
     if hero_image_url:
         embed["image"] = {"url": hero_image_url}
@@ -118,9 +120,7 @@ def _send_section(
             "description": chunk,
             "url": source_url,
             "color": color,
-            "footer": {
-                "text": f"{BR_FLAG} Rust Updates PT-BR • {patch_name}"
-            },
+            "footer": {"text": f"{BR_FLAG} Rust Updates PT-BR • {patch_name}"},
         }
         if image_url and index == 1:
             embed["image"] = {"url": image_url}
@@ -129,12 +129,25 @@ def _send_section(
 
 def _send_official_link(webhook_url: str, source_url: str) -> None:
     embed = {
-        "description": f"🔗 **[VER PATCH NOTES OFICIAIS]({source_url})**",
-        "url": source_url,
+        "title": "🔗 PATCH NOTES OFICIAIS",
+        "description": "Leia a atualização completa diretamente no site oficial do Rust.",
         "color": 0x5865F2,
         "footer": {"text": f"{BR_FLAG} Rust Updates PT-BR"},
     }
-    _post(webhook_url, [embed])
+    components = [
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": 5,
+                    "label": "Ver Patch Notes Oficiais",
+                    "url": source_url,
+                }
+            ],
+        }
+    ]
+    _post(webhook_url, [embed], components=components)
 
 
 def send_patch(
