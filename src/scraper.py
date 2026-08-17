@@ -12,7 +12,7 @@ RUST_CHANGES_URL = "https://rust.facepunch.com/changes/1"
 RUST_NEWS_URL = "https://rust.facepunch.com/news"
 STEAM_NEWS_API = "https://api.steampowered.com/ISteamNews/GetNewsForApp/v0002/"
 STEAM_APP_ID = 252490
-USER_AGENT = "RustDiscordUpdater/4.0"
+USER_AGENT = "RustDiscordUpdater/4.1"
 IGNORED_MARKERS = {"add_circle", "arrow_circle_up", "remove_circle", "error", "handyman"}
 SECTION_NAMES = {"Features", "Improvements", "Fixed", "Removed", "Known Issues", "Changes"}
 
@@ -136,7 +136,6 @@ def _steam_news_items(limit: int = 50) -> list[dict]:
 
 
 def _extract_bbcode_images(contents: str) -> list[str]:
-    """Extract the actual image URLs embedded in a Steam announcement body."""
     urls: list[str] = []
     patterns = [
         r"\[img\](https?://[^\[]+)\[/img\]",
@@ -145,7 +144,6 @@ def _extract_bbcode_images(contents: str) -> list[str]:
     for pattern in patterns:
         urls.extend(re.findall(pattern, contents, flags=re.IGNORECASE))
 
-    # Keep order and remove duplicates.
     seen: set[str] = set()
     result: list[str] = []
     for url in urls:
@@ -156,12 +154,41 @@ def _extract_bbcode_images(contents: str) -> list[str]:
     return result
 
 
-def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
-    """Find the Steam announcement matching the Rust patch and use its first image.
+def _extract_steam_og_image(article_url: str) -> str | None:
+    try:
+        html = fetch_html(article_url)
+    except requests.RequestException as exc:
+        print(f"Steam announcement page request failed: {exc}")
+        return None
 
-    Steam's news feed is the source used by the Rust Community Hub, so this is
-    more reliable for the *main update image* than harvesting every image from
-    the Facepunch article.
+    soup = BeautifulSoup(html, "html.parser")
+    for attrs in (
+        {"property": "og:image"},
+        {"name": "og:image"},
+    ):
+        tag = soup.find("meta", attrs=attrs)
+        if tag and isinstance(tag.get("content"), str) and tag["content"].strip():
+            return urljoin(article_url, tag["content"].strip())
+
+    return None
+
+
+def _steam_announcement_url(item: dict) -> str | None:
+    url = item.get("url")
+    if isinstance(url, str) and url.startswith("http"):
+        return url
+    gid = item.get("gid")
+    if gid:
+        return f"https://steamcommunity.com/games/{STEAM_APP_ID}/announcements/detail/{gid}"
+    return None
+
+
+def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
+    """Find the Steam announcement matching the Rust patch and return its main image.
+
+    We first open the matching Steam announcement and read its OpenGraph image,
+    which is the header/cover artwork displayed by Steam. The older API feed does
+    not expose that cover field directly, so the article page is required.
     """
     try:
         items = _steam_news_items()
@@ -170,36 +197,65 @@ def fetch_steam_main_image(patch_name: str) -> ArticleImage | None:
         return None
 
     wanted = _normalise_text(patch_name)
+    best_item: dict | None = None
+    best_score = 0.0
 
-    candidates: list[dict] = []
     for item in items:
+        if not isinstance(item, dict):
+            continue
         title = _normalise_text(str(item.get("title", "")))
         if not title:
             continue
-        # Exact match first, then tolerant containment for titles such as
-        # "Rust - Power Trip" versus "Power Trip".
-        if title == wanted or wanted in title or title in wanted:
-            candidates.append(item)
 
-    if not candidates:
+        if title == wanted:
+            best_item = item
+            best_score = 1.0
+            break
+
+        if wanted in title or title in wanted:
+            score = 0.8
+        else:
+            wanted_words = set(wanted.split())
+            title_words = set(title.split())
+            score = len(wanted_words & title_words) / max(len(wanted_words | title_words), 1)
+
+        if score > best_score:
+            best_score = score
+            best_item = item
+
+    if best_item is None or best_score < 0.50:
         print(f"No Steam announcement matched patch '{patch_name}'.")
         return None
 
-    # Prefer Rust's own Steam announcement/news feed when available.
-    item = candidates[0]
-    contents = str(item.get("contents", ""))
-    image_urls = _extract_bbcode_images(contents)
-    if not image_urls:
-        print(f"Steam announcement found for '{patch_name}', but it contains no image BBCode.")
+    article_url = _steam_announcement_url(best_item)
+    if not article_url:
+        print(f"Steam announcement matched but has no usable URL: {best_item.get('title')}")
         return None
 
-    image_url = image_urls[0]
-    print(f"Steam main image found for '{patch_name}': {image_url}")
-    return ArticleImage(
-        url=image_url,
-        context=f"Steam main update image {patch_name}",
-        is_og_image=True,
-    )
+    print(f"Matched Steam announcement: {best_item.get('title')} ({best_score:.2f})")
+
+    # Preferred source: the actual Steam announcement cover/header.
+    image_url = _extract_steam_og_image(article_url)
+    if image_url:
+        print(f"Steam main image (OG) found: {image_url}")
+        return ArticleImage(
+            url=image_url,
+            context=f"Steam main update image {patch_name}",
+            is_og_image=True,
+        )
+
+    # Fallback: use the first explicit image in the announcement body.
+    image_urls = _extract_bbcode_images(str(best_item.get("contents", "")))
+    if image_urls:
+        print(f"Steam main image (body fallback) found: {image_urls[0]}")
+        return ArticleImage(
+            url=image_urls[0],
+            context=f"Steam main update image {patch_name}",
+            is_og_image=True,
+        )
+
+    print(f"Steam announcement found for '{patch_name}', but no main image was found.")
+    return None
 
 
 # ---------- Legacy Facepunch helpers kept for tests/fallback tooling ----------
@@ -313,7 +369,6 @@ def fetch_article_images(patch_name: str) -> list[ArticleImage]:
 
 
 def choose_hero_image(images: list[ArticleImage]) -> ArticleImage | None:
-    """Legacy hero chooser retained for compatibility with existing tests."""
     if not images:
         return None
     return images[0]
@@ -355,7 +410,4 @@ def match_section_images(
         if best_image is not None and best_score >= 2:
             matches[section.title] = best_image.url
             remaining.pop(best_index)
-            print(f"Matched image to section '{section.title}': {best_image.url}")
-        else:
-            print(f"No confident image match for section '{section.title}'")
     return matches
